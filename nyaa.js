@@ -52,9 +52,12 @@ export default new class Nyaa {
             + (titlesParam ? '&titles=' + encodeURIComponent(titlesParam) : '')
 
         const res = await fetch(this.base + params)
-        if (!res.ok) return []
+        if (!res.ok) return [] 
+        
+        const data = await res.json()
+        if (!Array.isArray(data)) return []
 
-        return res.data.map(item => ({
+        return data.map(item => ({
             title: item.title || 'Unknown',
             link: item.magnet || item.hash || item.link || '',
             hash: item.hash || '',
