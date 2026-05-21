@@ -12,7 +12,7 @@
     ],
     "nsfw": false,
     "icon": "https://nyaa.si/static/favicon.png",
-    //"update": "https://raw.githubusercontent.com/ReWelp/HayasexShiru-Extensions/main/hayase/index.json",
-    //"code": "https://raw.githubusercontent.com/ReWelp/HayasexShiru-Extensions/main/hayase/nyaa.js"
+    "update": "https://raw.githubusercontent.com/sussyseraph/extensions/refs/heads/main/index.json",
+    "code": "https://raw.githubusercontent.com/sussyseraph/extensions/refs/heads/main/nyaa.js"
   }
 ]
