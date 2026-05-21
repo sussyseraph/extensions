@@ -1,24 +1,33 @@
 export default new class Nyaa {
     base = 'https://nyaasi-api.vercel.app/api/search'
+
     async single(query) {
         const {titles, episode, absoluteEpisodeNumber, exclusions = [], resolution, fetch} = query
-        if(!titles?.length) return []
-        return this.search({titles, episode, absoluteEpisode: absoluteEpisodeNumber, exclusions, resolution, batch:false, fetch})
+        if (!titles?.length) return []
+        return this.search({
+            titles,
+            episode,
+            absoluteEpisode: absoluteEpisodeNumber,
+            exclusions,
+            resolution,
+            batch: false,
+            fetch
+        })
     }
 
-    async batch(query){
+    async batch(query) {
         const {titles, exclusions = [], fetch} = query
-        if(!titles?.length) return []
-        return this.search({titles, exclusions, batch:true, fetch})
+        if (!titles?.length) return []
+        return this.search({titles, exclusions, batch: true, fetch})
     }
 
-    async movie(query){
+    async movie(query) {
         const {titles, resolution, exclusions = [], fetch} = query
-        if(!titles?.length) return []
-        return this.search({titles, exclusions, resolution, batch:false, fetch})
+        if (!titles?.length) return []
+        return this.search({titles, exclusions, resolution, batch: false, fetch})
     }
 
-    async search({titles, episode, absoluteEpisode, exclusions, resolution, batch, fetch}){
+    async search({titles, episode, absoluteEpisode, exclusions, resolution, batch, fetch}) {
         // pick best title for primary
         const latin = titles.filter(t => /[z-zA-Z]/.test(t))
         const pool = latin.length ? latin : titles
@@ -43,9 +52,9 @@ export default new class Nyaa {
             + (titlesParam ? '&titles=' + encodeURIComponent(titlesParam) : '')
 
         const res = await fetch(this.base + params)
-        if(!res.ok) return []
+        if (!res.ok) return []
 
-        return data.map(item => ({
+        return res.data.map(item => ({
             title: item.title || 'Unknown',
             link: item.magnet || item.hash || item.link || '',
             hash: item.hash || '',
@@ -62,7 +71,7 @@ export default new class Nyaa {
         try {
             const res = await fetch(this.base + '?q=test&category=1_0')
             return res.ok
-        } catch{
+        } catch {
             return false;
         }
     }
