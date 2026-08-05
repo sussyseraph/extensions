@@ -2,7 +2,15 @@ export default new class Nyaa {
     base = 'https://nyaa.si'
 
     async single(query) {
-        const {titles, episode, absoluteEpisodeNumber, exclusions = [], resolution, fetch} = query
+        const {
+            titles,
+            episode,
+            absoluteEpisodeNumber,
+            exclusions = [],
+            resolution,
+            fetch
+        } = query
+
         if (!titles?.length) return []
 
         return this.search({
@@ -17,7 +25,13 @@ export default new class Nyaa {
     }
 
     async batch(query) {
-        const {titles, exclusions = [], resolution, fetch} = query
+        const {
+            titles,
+            exclusions = [],
+            resolution,
+            fetch
+        } = query
+
         if (!titles?.length) return []
 
         return this.search({
@@ -30,7 +44,13 @@ export default new class Nyaa {
     }
 
     async movie(query) {
-        const {titles, resolution, exclusions = [], fetch} = query
+        const {
+            titles,
+            resolution,
+            exclusions = [],
+            fetch
+        } = query
+
         if (!titles?.length) return []
 
         return this.search({
@@ -42,12 +62,18 @@ export default new class Nyaa {
         })
     }
 
-    async search({titles, episode, absoluteEpisode, exclusions, resolution, mode, fetch}) {
+    async search({
+                     titles,
+                     episode,
+                     absoluteEpisode,
+                     exclusions,
+                     resolution,
+                     mode,
+                     fetch
+                 }) {
         if (typeof fetch !== 'function') {
             throw new Error('Hayase did not provide its CORS-enabled fetch function.')
         }
-
-        const request = fetch
 
         const searchTitles = this.getSearchTitles(titles)
         if (!searchTitles.length) return []
@@ -60,8 +86,11 @@ export default new class Nyaa {
             mode
         })
 
+        const allResults = []
+
         for (const searchQuery of searchQueries) {
-            const response = await request(this.buildFeedUrl(searchQuery))
+            const response = await fetch(this.buildFeedUrl(searchQuery))
+
             if (!response.ok) {
                 throw new Error(`Nyaa.si returned HTTP ${response.status}.`)
             }
@@ -71,21 +100,25 @@ export default new class Nyaa {
             const results = items
                 .map(item => this.mapResult(item, mode))
                 .filter(Boolean)
-                .filter(result => this.matchesQuery(result, {
-                    titles,
-                    episode,
-                    absoluteEpisode,
-                    exclusions,
-                    resolution,
-                    mode
-                }))
+                .filter(result => this.matchesExclusions(result, exclusions))
 
-            if (results.length) {
-                return this.deduplicateResults(results)
-            }
+            console.debug(
+                `[Nyaa] ${searchQuery}: ${items.length} RSS items, ` +
+                `${results.length} usable results`
+            )
+
+            allResults.push(...results)
         }
 
-        return []
+        const results = this.deduplicateResults(allResults)
+
+        return this.rankResults(results, {
+            titles,
+            episode,
+            absoluteEpisode,
+            resolution,
+            mode
+        })
     }
 
     buildFeedUrl(searchQuery) {
@@ -101,64 +134,74 @@ export default new class Nyaa {
         return this.base + '/?' + params.toString()
     }
 
-    buildSearchQueries({searchTitles, episode, absoluteEpisode, resolution, mode}) {
-        const primaryTitle = searchTitles[0]
-        const alternateTitle = searchTitles[1]
+    buildSearchQueries({
+                           searchTitles,
+                           episode,
+                           absoluteEpisode,
+                           resolution,
+                           mode
+                       }) {
         const resolutionTerm = this.normalizeResolution(resolution)
+        const resolutionSearchTerm = resolutionTerm
+            ? resolutionTerm + 'p'
+            : ''
         const queries = []
 
-        if (mode === 'single') {
-            if (episode != null) {
+        for (const title of searchTitles.slice(0, 2)) {
+            if (mode === 'single') {
+                if (episode != null) {
+                    queries.push(this.joinSearchTerms(
+                        title,
+                        String(episode).padStart(2, '0'),
+                        resolutionSearchTerm
+                    ))
+                }
+
+                if (
+                    absoluteEpisode != null &&
+                    Number(absoluteEpisode) !== Number(episode)
+                ) {
+                    queries.push(this.joinSearchTerms(
+                        title,
+                        String(absoluteEpisode).padStart(2, '0'),
+                        resolutionSearchTerm
+                    ))
+                }
+
                 queries.push(this.joinSearchTerms(
-                    primaryTitle,
-                    String(episode).padStart(2, '0'),
-                    resolutionTerm ? resolutionTerm + 'p' : ''
+                    title,
+                    resolutionSearchTerm
+                ))
+            } else if (mode === 'batch') {
+                queries.push(this.joinSearchTerms(
+                    title,
+                    'Batch',
+                    resolutionSearchTerm
+                ))
+
+                queries.push(this.joinSearchTerms(
+                    title,
+                    'Complete',
+                    resolutionSearchTerm
+                ))
+
+                queries.push(this.joinSearchTerms(
+                    title,
+                    resolutionSearchTerm
                 ))
             } else {
                 queries.push(this.joinSearchTerms(
-                    primaryTitle,
-                    resolutionTerm ? resolutionTerm + 'p' : ''
+                    title,
+                    resolutionSearchTerm
                 ))
-            }
 
-            if (absoluteEpisode != null && absoluteEpisode !== episode) {
-                queries.push(this.joinSearchTerms(
-                    primaryTitle,
-                    String(absoluteEpisode).padStart(2, '0'),
-                    resolutionTerm ? resolutionTerm + 'p' : ''
-                ))
-            } else if (alternateTitle && episode != null) {
-                queries.push(this.joinSearchTerms(
-                    alternateTitle,
-                    String(episode).padStart(2, '0'),
-                    resolutionTerm ? resolutionTerm + 'p' : ''
-                ))
-            }
-        } else if (mode === 'batch') {
-            queries.push(this.joinSearchTerms(
-                primaryTitle,
-                'Batch',
-                resolutionTerm ? resolutionTerm + 'p' : ''
-            ))
-            queries.push(this.joinSearchTerms(
-                primaryTitle,
-                resolutionTerm ? resolutionTerm + 'p' : ''
-            ))
-        } else {
-            queries.push(this.joinSearchTerms(
-                primaryTitle,
-                resolutionTerm ? resolutionTerm + 'p' : ''
-            ))
-
-            if (alternateTitle) {
-                queries.push(this.joinSearchTerms(
-                    alternateTitle,
-                    resolutionTerm ? resolutionTerm + 'p' : ''
-                ))
+                if (resolutionSearchTerm) {
+                    queries.push(title)
+                }
             }
         }
 
-        return [...new Set(queries.filter(Boolean))].slice(0, 2)
+        return [...new Set(queries.filter(Boolean))].slice(0, 5)
     }
 
     joinSearchTerms(...terms) {
@@ -169,19 +212,23 @@ export default new class Nyaa {
     }
 
     getSearchTitles(titles) {
-        const usableTitles = [...new Set(titles
-            .filter(title => typeof title === 'string' && title.trim())
-            .map(title => this.cleanSearchTitle(title))
-            .filter(Boolean))]
-        const latinTitles = usableTitles.filter(title => /[A-Za-z]/.test(title))
-        const titlePool = latinTitles.length ? latinTitles : usableTitles
+        const usableTitles = [...new Set(
+            titles
+                .filter(title =>
+                    typeof title === 'string' &&
+                    title.trim()
+                )
+                .map(title => this.cleanSearchTitle(title))
+                .filter(Boolean)
+        )]
 
-        return titlePool.sort((left, right) => {
-            const leftPenalty = left.length < 4 ? 100 : 0
-            const rightPenalty = right.length < 4 ? 100 : 0
+        const latinTitles = usableTitles.filter(title =>
+            /[A-Za-z]/.test(title)
+        )
 
-            return leftPenalty + left.length - (rightPenalty + right.length)
-        })
+        return latinTitles.length
+            ? latinTitles
+            : usableTitles
     }
 
     cleanSearchTitle(title) {
@@ -192,11 +239,20 @@ export default new class Nyaa {
     }
 
     parseFeed(xml) {
-        if (typeof xml !== 'string' || !/<rss\b/i.test(xml) || !/<channel\b/i.test(xml)) {
-            throw new Error('Nyaa.si did not return a valid RSS feed. The site may be unavailable or blocking the request.')
+        if (
+            typeof xml !== 'string' ||
+            !/<rss\b/i.test(xml) ||
+            !/<channel\b/i.test(xml)
+        ) {
+            throw new Error(
+                'Nyaa.si did not return a valid RSS feed. ' +
+                'The site may be unavailable or blocking the request.'
+            )
         }
 
-        return [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)]
+        return [...xml.matchAll(
+            /<item\b[^>]*>([\s\S]*?)<\/item>/gi
+        )]
             .map(match => match[1])
             .map(itemXml => ({
                 title: this.getTagValue(itemXml, 'title'),
@@ -212,18 +268,25 @@ export default new class Nyaa {
     }
 
     getTagValue(xml, tagName) {
-        const escapedTagName = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const escapedTagName = tagName.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            '\\$&'
+        )
         const match = xml.match(new RegExp(
-            `<${escapedTagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escapedTagName}>`,
+            `<${escapedTagName}(?:\\s[^>]*)?>` +
+            `([\\s\\S]*?)` +
+            `<\\/${escapedTagName}>`,
             'i'
         ))
 
         if (!match) return ''
 
-        return this.decodeXml(match[1]
-            .replace(/^\s*<!\[CDATA\[/, '')
-            .replace(/\]\]>\s*$/, '')
-            .trim())
+        return this.decodeXml(
+            match[1]
+                .replace(/^\s*<!\[CDATA\[/, '')
+                .replace(/\]\]>\s*$/, '')
+                .trim()
+        )
     }
 
     decodeXml(value) {
@@ -248,10 +311,14 @@ export default new class Nyaa {
     }
 
     mapResult(item, mode) {
-        const title = item.title.trim()
-        const hash = item.hash.trim().toLowerCase()
+        const title = String(item.title ?? '').trim()
+        const hash = String(item.hash ?? '')
+            .trim()
+            .toLowerCase()
 
-        if (!title || !/^[a-f0-9]{40}$/i.test(hash)) return null
+        if (!title || !/^[a-f0-9]{40}$/i.test(hash)) {
+            return null
+        }
 
         const result = {
             title,
@@ -266,63 +333,139 @@ export default new class Nyaa {
         }
 
         const id = this.extractId(item.guid || item.link)
-        if (id != null) result.id = id
-        if (mode === 'batch') result.type = 'batch'
+
+        if (id != null) {
+            result.id = id
+        }
+
+        if (mode === 'batch') {
+            result.type = 'batch'
+        }
 
         return result
     }
 
     extractId(value) {
-        const match = String(value ?? '').match(/\/(?:view|download)\/(\d+)/i)
+        const match = String(value ?? '').match(
+            /\/(?:view|download)\/(\d+)/i
+        )
+
         if (!match) return null
 
         const id = Number(match[1])
 
-        return Number.isSafeInteger(id) ? id : null
+        return Number.isSafeInteger(id)
+            ? id
+            : null
     }
 
-    matchesQuery(result, {titles, episode, absoluteEpisode, exclusions, resolution, mode}) {
+    matchesExclusions(result, exclusions) {
         const normalizedTitle = result.title.toLowerCase()
         const normalizedExclusions = exclusions
-            .filter(exclusion => typeof exclusion === 'string' && exclusion.trim())
+            .filter(exclusion =>
+                typeof exclusion === 'string' &&
+                exclusion.trim()
+            )
             .map(exclusion => exclusion.toLowerCase())
 
-        if (normalizedExclusions.some(exclusion => normalizedTitle.includes(exclusion))) {
-            return false
-        }
-        if (!this.matchesAnyTitle(result.title, titles)) return false
-        if (!this.matchesResolution(result.title, resolution)) return false
-
-        if (mode === 'batch') {
-            return this.isBatchTitle(result.title)
-        }
-        if (mode === 'single') {
-            return !this.isBatchTitle(result.title) && this.matchesEpisode(
-                result.title,
-                episode,
-                absoluteEpisode
-            )
-        }
-
-        return !this.isBatchTitle(result.title)
+        return !normalizedExclusions.some(exclusion =>
+            normalizedTitle.includes(exclusion)
+        )
     }
 
-    matchesAnyTitle(resultTitle, titles) {
-        const resultTokens = new Set(this.tokenizeTitle(resultTitle))
+    rankResults(results, {
+        titles,
+        episode,
+        absoluteEpisode,
+        resolution,
+        mode
+    }) {
+        return results
+            .map(result => {
+                const titleScore = this.getTitleScore(
+                    result.title,
+                    titles
+                )
+                const episodeMatch = this.matchesEpisode(
+                    result.title,
+                    episode,
+                    absoluteEpisode
+                )
+                const resolutionMatch = this.matchesResolution(
+                    result.title,
+                    resolution
+                )
+                const batchMatch = this.isBatchTitle(result.title)
 
-        return titles.some(title => {
+                let score = titleScore * 20
+
+                if (episodeMatch) {
+                    score += 100
+                }
+
+                if (resolutionMatch) {
+                    score += 30
+                }
+
+                if (mode === 'batch') {
+                    score += batchMatch ? 100 : -25
+                } else {
+                    score += batchMatch ? -50 : 15
+                }
+
+                score += Math.min(result.seeders, 100)
+
+                return {
+                    result: {
+                        ...result,
+                        accuracy: this.getAccuracy({
+                            titleScore,
+                            episodeMatch,
+                            resolutionMatch,
+                            mode
+                        })
+                    },
+                    score
+                }
+            })
+            .sort((left, right) =>
+                right.score - left.score ||
+                right.result.seeders - left.result.seeders ||
+                right.result.date.getTime() -
+                left.result.date.getTime()
+            )
+            .map(entry => entry.result)
+    }
+
+    getTitleScore(resultTitle, titles) {
+        const resultTokens = new Set(
+            this.tokenizeTitle(resultTitle)
+        )
+        let bestScore = 0
+
+        for (const title of titles) {
             const titleTokens = this.tokenizeTitle(title)
-                .filter(token => !['a', 'an', 'the', 'season', 'part', 'cour', 'movie'].includes(token))
+                .filter(token => ![
+                    'a',
+                    'an',
+                    'the',
+                    'season',
+                    'part',
+                    'cour',
+                    'movie'
+                ].includes(token))
 
-            if (!titleTokens.length) return false
+            if (!titleTokens.length) continue
 
-            const matches = titleTokens.filter(token => resultTokens.has(token)).length
-            const requiredMatches = titleTokens.length <= 3
-                ? titleTokens.length
-                : Math.ceil(titleTokens.length * 0.7)
+            const matches = titleTokens.filter(token =>
+                resultTokens.has(token)
+            ).length
+            const score = matches / titleTokens.length
 
-            return matches >= requiredMatches
-        })
+            bestScore = Math.max(bestScore, score)
+        }
+
+        return bestScore
     }
 
     tokenizeTitle(value) {
@@ -337,50 +480,113 @@ export default new class Nyaa {
     }
 
     matchesEpisode(title, episode, absoluteEpisode) {
-        const episodeNumbers = [...new Set([episode, absoluteEpisode]
-            .filter(value => value != null && Number.isFinite(Number(value)))
-            .map(value => Number(value)))]
+        const episodeNumbers = [...new Set(
+            [episode, absoluteEpisode]
+                .filter(value =>
+                    value != null &&
+                    Number.isFinite(Number(value))
+                )
+                .map(value => Number(value))
+        )]
 
-        if (!episodeNumbers.length) return true
+        if (!episodeNumbers.length) {
+            return true
+        }
 
         return episodeNumbers.some(episodeNumber => {
-            const escapedEpisode = String(episodeNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-            const contextualPatterns = [
-                new RegExp(`\\bS\\d{1,2}E0*${escapedEpisode}(?:v\\d+)?\\b`, 'i'),
-                new RegExp(`\\b(?:E|EP|EPISODE)[ ._-]*0*${escapedEpisode}(?:v\\d+)?\\b`, 'i'),
-                new RegExp(`(?:^|[^A-Za-z0-9])0*${escapedEpisode}(?:v\\d+)?(?=$|[^A-Za-z0-9])`, 'i')
+            const escapedEpisode = String(
+                episodeNumber
+            ).replace(
+                /[.*+?^${}()|[\]\\]/g,
+                '\\$&'
+            )
+
+            const patterns = [
+                new RegExp(
+                    `\\bS\\d{1,2}E0*${escapedEpisode}` +
+                    `(?:v\\d+)?\\b`,
+                    'i'
+                ),
+                new RegExp(
+                    `\\b(?:E|EP|EPISODE)[ ._-]*` +
+                    `0*${escapedEpisode}(?:v\\d+)?\\b`,
+                    'i'
+                ),
+                new RegExp(
+                    `(?:^|[^A-Za-z0-9])` +
+                    `0*${escapedEpisode}(?:v\\d+)?` +
+                    `(?=$|[^A-Za-z0-9])`,
+                    'i'
+                )
             ]
 
-            return contextualPatterns.some(pattern => pattern.test(title))
+            return patterns.some(pattern =>
+                pattern.test(title)
+            )
         })
     }
 
     matchesResolution(title, resolution) {
-        const normalizedResolution = this.normalizeResolution(resolution)
-        if (!normalizedResolution) return true
+        const normalizedResolution = this.normalizeResolution(
+            resolution
+        )
+
+        if (!normalizedResolution) {
+            return true
+        }
 
         const dimensionMap = {
-            '2160': ['3840x2160', '4096x2160'],
-            '1080': ['1920x1080'],
-            '720': ['1280x720'],
-            '540': ['960x540'],
-            '480': ['640x480', '720x480', '854x480']
+            '2160': [
+                '3840x2160',
+                '4096x2160'
+            ],
+            '1080': [
+                '1920x1080'
+            ],
+            '720': [
+                '1280x720'
+            ],
+            '540': [
+                '960x540'
+            ],
+            '480': [
+                '640x480',
+                '720x480',
+                '854x480'
+            ]
         }
         const aliasMap = {
-            '2160': ['4k', 'uhd'],
-            '1080': ['fhd']
+            '2160': [
+                '4k',
+                'uhd'
+            ],
+            '1080': [
+                'fhd'
+            ]
         }
         const patterns = [
-            new RegExp(`(?:^|[^0-9])${normalizedResolution}p(?:$|[^0-9])`, 'i'),
-            ...(dimensionMap[normalizedResolution] ?? []).map(dimension =>
-                new RegExp(`(?:^|[^0-9])${dimension}(?:$|[^0-9])`, 'i')
+            new RegExp(
+                `(?:^|[^0-9])${normalizedResolution}p` +
+                `(?:$|[^0-9])`,
+                'i'
             ),
-            ...(aliasMap[normalizedResolution] ?? []).map(alias =>
-                new RegExp(`(?:^|[^A-Za-z0-9])${alias}(?:$|[^A-Za-z0-9])`, 'i')
-            )
+            ...(dimensionMap[normalizedResolution] ?? [])
+                .map(dimension => new RegExp(
+                    `(?:^|[^0-9])${dimension}` +
+                    `(?:$|[^0-9])`,
+                    'i'
+                )),
+            ...(aliasMap[normalizedResolution] ?? [])
+                .map(alias => new RegExp(
+                    `(?:^|[^A-Za-z0-9])${alias}` +
+                    `(?:$|[^A-Za-z0-9])`,
+                    'i'
+                ))
         ]
 
-        return patterns.some(pattern => pattern.test(title))
+        return patterns.some(pattern =>
+            pattern.test(title)
+        )
     }
 
     normalizeResolution(resolution) {
@@ -390,7 +596,33 @@ export default new class Nyaa {
     }
 
     isBatchTitle(title) {
-        return /\b(?:batch|complete)\b|全集|(?:^|[^0-9])\d{1,3}\s*[-~–]\s*\d{1,3}(?:[^0-9]|$)|\bepisodes?\s*\d{1,3}\s*[-~–]\s*\d{1,3}\b/i.test(title)
+        return /\b(?:batch|complete)\b|全集|(?:^|[^0-9])\d{1,3}\s*[-~–]\s*\d{1,3}(?:[^0-9]|$)|\bepisodes?\s*\d{1,3}\s*[-~–]\s*\d{1,3}\b/i
+            .test(title)
+    }
+
+    getAccuracy({
+                    titleScore,
+                    episodeMatch,
+                    resolutionMatch,
+                    mode
+                }) {
+        if (
+            titleScore >= 0.8 &&
+            resolutionMatch &&
+            (mode !== 'single' || episodeMatch)
+        ) {
+            return 'high'
+        }
+
+        if (
+            titleScore >= 0.5 ||
+            episodeMatch ||
+            resolutionMatch
+        ) {
+            return 'medium'
+        }
+
+        return 'low'
     }
 
     deduplicateResults(results) {
@@ -398,7 +630,10 @@ export default new class Nyaa {
 
         return results.filter(result => {
             const key = result.hash || result.link
-            if (seen.has(key)) return false
+
+            if (seen.has(key)) {
+                return false
+            }
 
             seen.add(key)
 
@@ -407,16 +642,31 @@ export default new class Nyaa {
     }
 
     toNumber(value) {
-        const parsed = Number(String(value ?? '').replace(/,/g, '').trim())
+        const parsed = Number(
+            String(value ?? '')
+                .replace(/,/g, '')
+                .trim()
+        )
 
-        return Number.isFinite(parsed) ? parsed : 0
+        return Number.isFinite(parsed)
+            ? parsed
+            : 0
     }
 
     parseSize(value) {
         const normalized = String(value ?? '')
             .replace(/,/g, '')
             .trim()
-        const match = normalized.match(/^([\d.]+)\s*([KMGTPE]?i?B)$/i)
+        const directNumber = Number(normalized)
+
+        if (Number.isFinite(directNumber)) {
+            return directNumber
+        }
+
+        const match = normalized.match(
+            /^([\d.]+)\s*([KMGTPE]?i?B)$/i
+        )
+
         if (!match) return 0
 
         const amount = Number(match[1])
@@ -438,21 +688,31 @@ export default new class Nyaa {
         }
         const power = powers[unit]
 
-        if (!Number.isFinite(amount) || power == null) return 0
+        if (
+            !Number.isFinite(amount) ||
+            power == null
+        ) {
+            return 0
+        }
 
         return Math.round(
-            amount * Math.pow(unit.includes('I') ? 1024 : 1000, power)
+            amount *
+            Math.pow(
+                unit.includes('I') ? 1024 : 1000,
+                power
+            )
         )
     }
 
     parseDate(value) {
         const date = new Date(value || 0)
 
-        return Number.isNaN(date.getTime()) ? new Date(0) : date
+        return Number.isNaN(date.getTime())
+            ? new Date(0)
+            : date
     }
 
     async test() {
-        // cors enabled request isn't passed to test
         return true
     }
 }()
