@@ -137,6 +137,19 @@ export default new class Nyaa {
             fetch,
             exclusions
         )
+
+        console.debug(
+            '[Nyaa] Batch candidate details: ' +
+            JSON.stringify(
+                results.map(result => ({
+                    title: result.title,
+                    date: result.date instanceof Date
+                        ? result.date.toISOString()
+                        : String(result.date),
+                    seeders: result.seeders
+                }))
+            )
+        )
         const match = this.selectBatchResults(
             results,
             episodeTargets
