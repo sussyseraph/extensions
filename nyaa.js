@@ -156,6 +156,126 @@ export default new class Nyaa {
         return []
     }
 
+    async fetchSingleTargetResults({
+                                       searchTitles,
+                                       target,
+                                       resolution,
+                                       fetch,
+                                       exclusions
+                                   }) {
+        const queries = this.buildSingleQueries(
+            searchTitles,
+            [target],
+            resolution
+        )
+        const results = await this.fetchQueries(
+            queries,
+            fetch,
+            exclusions
+        )
+
+        return this.selectSingleEpisodeResults(
+            results,
+            [target]
+        ).results
+    }
+
+    prepareSingleResults(
+        results,
+        titles,
+        resolution,
+        accuracy
+    ) {
+        return this.sortResults(
+            results,
+            titles,
+            resolution
+        ).map(result => ({
+            ...result,
+            accuracy
+        }))
+    }
+
+    buildTitleOnlyQueries(searchTitles) {
+        return [...new Set(
+            searchTitles
+                .slice(0, 2)
+                .filter(Boolean)
+        )]
+    }
+
+    inferParallelEpisodeNumber(results, localEpisode) {
+        if (
+            !Number.isInteger(localEpisode) ||
+            localEpisode < 2
+        ) {
+            return null
+        }
+
+        const episodeNumbers = new Set(
+            results
+                .filter(result => !this.isBatchTitle(result.title))
+                .map(result => this.extractSingleEpisodeNumber(
+                    result.title
+                ))
+                .filter(episodeNumber =>
+                    Number.isInteger(episodeNumber) &&
+                    episodeNumber > 0
+                )
+        )
+
+        /*
+         * Require the local sequence to contain both the current
+         * episode and its predecessor. For example, 1 and 2.
+         */
+        if (
+            !episodeNumbers.has(localEpisode) ||
+            !episodeNumbers.has(localEpisode - 1)
+        ) {
+            return null
+        }
+
+        /*
+         * Find a higher parallel sequence containing the equivalent
+         * current episode and its predecessor. For example, 41 and 42.
+         */
+        const inferredCandidates = [...episodeNumbers]
+            .filter(episodeNumber =>
+                episodeNumber > localEpisode + 1 &&
+                episodeNumbers.has(episodeNumber - 1)
+            )
+            .sort((left, right) =>
+                left - right
+            )
+
+        return inferredCandidates[0] ?? null
+    }
+
+    extractSingleEpisodeNumber(title) {
+        const patterns = [
+            /\bS\d{1,3}E0*(\d{1,4})(?:v\d+)?\b/i,
+            /\b(?:EPISODE|EP|E)[ ._-]*0*(\d{1,4})(?:v\d+)?\b/i,
+            /(?:^|[^A-Za-z0-9])#0*(\d{1,4})(?:v\d+)?(?=$|[^0-9.])/i,
+            /(?:^|[\s._\[\](){}])[-–—][\s._-]*0*(\d{1,4})(?:v\d+)?(?=$|[\s._\[\](){}])/i,
+            /[\[(]\s*0*(\d{1,4})(?:v\d+)?\s*[\])]/i,
+            /(?:^|[\s._])0*(\d{1,4})(?:v\d+)?(?=\s*(?:\[|\(|$))/i
+        ]
+
+        for (const pattern of patterns) {
+            const match = String(title ?? '').match(pattern)
+
+            if (!match) continue
+
+            const episodeNumber = Number(match[1])
+
+            if (Number.isInteger(episodeNumber)) {
+                return episodeNumber
+            }
+        }
+
+        return null
+    }
+
     async batch(query) {
         const {
             titles,
