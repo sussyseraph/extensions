@@ -1,5 +1,5 @@
 export default new class Nyaa {
-    base = 'https://nyaasi-api.vercel.app/api/search'
+    base = 'https://nyaa.si'
 
     async single(query) {
         const {titles, episode, absoluteEpisodeNumber, exclusions = [], resolution, fetch} = query
@@ -11,7 +11,7 @@ export default new class Nyaa {
             absoluteEpisode: absoluteEpisodeNumber,
             exclusions,
             resolution,
-            batch: false,
+            mode: 'single',
             fetch
         })
     }
@@ -24,7 +24,7 @@ export default new class Nyaa {
             titles,
             exclusions,
             resolution,
-            batch: true,
+            mode: 'batch',
             fetch
         })
     }
@@ -37,91 +37,150 @@ export default new class Nyaa {
             titles,
             exclusions,
             resolution,
-            batch: false,
+            mode: 'movie',
             fetch
         })
     }
 
-    async search({titles, episode, absoluteEpisode, exclusions, resolution, batch, fetch}) {
+    async search({titles, episode, absoluteEpisode, exclusions, resolution, mode, fetch}) {
         const request = fetch ?? globalThis.fetch
         if (typeof request !== 'function') {
             throw new Error('Hayase did not provide a usable fetch function.')
         }
 
-        const usableTitles = titles
+        const searchTitles = this.getSearchTitles(titles)
+        if (!searchTitles.length) return []
+
+        const searchQueries = this.buildSearchQueries({
+            searchTitles,
+            episode,
+            absoluteEpisode,
+            resolution,
+            mode
+        })
+
+        for (const searchQuery of searchQueries) {
+            const response = await request(this.buildFeedUrl(searchQuery))
+            if (!response.ok) {
+                throw new Error(`Nyaa.si returned HTTP ${response.status}.`)
+            }
+
+            const xml = await response.text()
+            const items = this.parseFeed(xml)
+            const results = items
+                .map(item => this.mapResult(item, mode))
+                .filter(Boolean)
+                .filter(result => this.matchesQuery(result, {
+                    titles,
+                    episode,
+                    absoluteEpisode,
+                    exclusions,
+                    resolution,
+                    mode
+                }))
+
+            if (results.length) {
+                return this.deduplicateResults(results)
+            }
+        }
+
+        return []
+    }
+
+    buildFeedUrl(searchQuery) {
+        const params = new URLSearchParams({
+            page: 'rss',
+            q: searchQuery,
+            c: '1_0',
+            f: '0',
+            s: 'seeders',
+            o: 'desc'
+        })
+
+        return this.base + '/?' + params.toString()
+    }
+
+    buildSearchQueries({searchTitles, episode, absoluteEpisode, resolution, mode}) {
+        const primaryTitle = searchTitles[0]
+        const alternateTitle = searchTitles[1]
+        const resolutionTerm = this.normalizeResolution(resolution)
+        const queries = []
+
+        if (mode === 'single') {
+            if (episode != null) {
+                queries.push(this.joinSearchTerms(
+                    primaryTitle,
+                    String(episode).padStart(2, '0'),
+                    resolutionTerm ? resolutionTerm + 'p' : ''
+                ))
+            } else {
+                queries.push(this.joinSearchTerms(
+                    primaryTitle,
+                    resolutionTerm ? resolutionTerm + 'p' : ''
+                ))
+            }
+
+            if (absoluteEpisode != null && absoluteEpisode !== episode) {
+                queries.push(this.joinSearchTerms(
+                    primaryTitle,
+                    String(absoluteEpisode).padStart(2, '0'),
+                    resolutionTerm ? resolutionTerm + 'p' : ''
+                ))
+            } else if (alternateTitle && episode != null) {
+                queries.push(this.joinSearchTerms(
+                    alternateTitle,
+                    String(episode).padStart(2, '0'),
+                    resolutionTerm ? resolutionTerm + 'p' : ''
+                ))
+            }
+        } else if (mode === 'batch') {
+            queries.push(this.joinSearchTerms(
+                primaryTitle,
+                'Batch',
+                resolutionTerm ? resolutionTerm + 'p' : ''
+            ))
+            queries.push(this.joinSearchTerms(
+                primaryTitle,
+                resolutionTerm ? resolutionTerm + 'p' : ''
+            ))
+        } else {
+            queries.push(this.joinSearchTerms(
+                primaryTitle,
+                resolutionTerm ? resolutionTerm + 'p' : ''
+            ))
+
+            if (alternateTitle) {
+                queries.push(this.joinSearchTerms(
+                    alternateTitle,
+                    resolutionTerm ? resolutionTerm + 'p' : ''
+                ))
+            }
+        }
+
+        return [...new Set(queries.filter(Boolean))].slice(0, 2)
+    }
+
+    joinSearchTerms(...terms) {
+        return terms
+            .filter(term => term != null && String(term).trim())
+            .map(term => String(term).trim())
+            .join(' ')
+    }
+
+    getSearchTitles(titles) {
+        const usableTitles = [...new Set(titles
             .filter(title => typeof title === 'string' && title.trim())
+            .map(title => this.cleanSearchTitle(title))
+            .filter(Boolean))]
         const latinTitles = usableTitles.filter(title => /[A-Za-z]/.test(title))
         const titlePool = latinTitles.length ? latinTitles : usableTitles
-        const title = titlePool.reduce((shortest, current) => {
-            const shortestSearchTitle = this.cleanSearchTitle(shortest)
-            const currentSearchTitle = this.cleanSearchTitle(current)
 
-            if (!shortestSearchTitle) return current
-            if (!currentSearchTitle) return shortest
+        return titlePool.sort((left, right) => {
+            const leftPenalty = left.length < 4 ? 100 : 0
+            const rightPenalty = right.length < 4 ? 100 : 0
 
-            return currentSearchTitle.length < shortestSearchTitle.length ? current : shortest
+            return leftPenalty + left.length - (rightPenalty + right.length)
         })
-        const searchTitle = this.cleanSearchTitle(title)
-
-        if (!searchTitle) return []
-
-        let searchQuery = searchTitle
-        if (!batch && episode != null) {
-            searchQuery += ' ' + String(episode).padStart(2, '0')
-        }
-        if (batch) searchQuery += ' Batch'
-        if (resolution) {
-            searchQuery += ' ' + String(resolution).replace(/p$/i, '') + 'p'
-        }
-
-        const extraTitles = titlePool
-            .filter(extraTitle => extraTitle !== title)
-            .slice(0, 2)
-        const params = new URLSearchParams({
-            q: searchQuery,
-            title,
-            category: '1_0',
-            batch: String(batch)
-        })
-
-        if (episode != null) {
-            params.set('episode', String(episode))
-        }
-        if (absoluteEpisode != null) {
-            params.set('absoluteEpisode', String(absoluteEpisode))
-        }
-        if (resolution) {
-            params.set('resolution', String(resolution).replace(/p$/i, ''))
-        }
-        if (exclusions.length) {
-            params.set('exclusions', exclusions.join(','))
-        }
-        if (extraTitles.length) {
-            params.set('titles', extraTitles.join('|||'))
-        }
-
-        const response = await request(this.base + '?' + params.toString())
-        if (!response.ok) {
-            throw new Error(`The Nyaa search API returned HTTP ${response.status}.`)
-        }
-
-        const payload = await response.json()
-        const items = this.findItems(payload)
-
-        if (!items) {
-            throw new Error('The Nyaa search API returned an unsupported response format.')
-        }
-
-        const normalizedExclusions = exclusions
-            .filter(exclusion => typeof exclusion === 'string' && exclusion.trim())
-            .map(exclusion => exclusion.toLowerCase())
-
-        return items
-            .map(item => this.mapResult(item, titles, batch))
-            .filter(Boolean)
-            .filter(result => !normalizedExclusions.some(exclusion =>
-                result.title.toLowerCase().includes(exclusion)
-            ))
     }
 
     cleanSearchTitle(title) {
@@ -131,127 +190,242 @@ export default new class Nyaa {
             .trim()
     }
 
-    findItems(payload, depth = 0) {
-        if (Array.isArray(payload)) return payload
-        if (!payload || typeof payload !== 'object' || depth > 2) return null
-
-        for (const key of ['data', 'results', 'torrents', 'items']) {
-            const items = this.findItems(payload[key], depth + 1)
-            if (items) return items
+    parseFeed(xml) {
+        if (typeof xml !== 'string' || !/<rss\b/i.test(xml) || !/<channel\b/i.test(xml)) {
+            throw new Error('Nyaa.si did not return a valid RSS feed. The site may be unavailable or blocking the request.')
         }
 
-        return null
+        return [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)]
+            .map(match => match[1])
+            .map(itemXml => ({
+                title: this.getTagValue(itemXml, 'title'),
+                link: this.getTagValue(itemXml, 'link'),
+                guid: this.getTagValue(itemXml, 'guid'),
+                pubDate: this.getTagValue(itemXml, 'pubDate'),
+                hash: this.getTagValue(itemXml, 'nyaa:infoHash'),
+                seeders: this.getTagValue(itemXml, 'nyaa:seeders'),
+                leechers: this.getTagValue(itemXml, 'nyaa:leechers'),
+                downloads: this.getTagValue(itemXml, 'nyaa:downloads'),
+                size: this.getTagValue(itemXml, 'nyaa:size')
+            }))
     }
 
-    mapResult(item, titles, batch) {
-        if (!item || typeof item !== 'object') return null
+    getTagValue(xml, tagName) {
+        const escapedTagName = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const match = xml.match(new RegExp(
+            `<${escapedTagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escapedTagName}>`,
+            'i'
+        ))
 
-        const title = this.firstString(
-            item.title,
-            item.name,
-            item.Name,
-            item.torrent_name
-        )
-        const magnet = this.firstString(
-            item.magnet,
-            item.Magnet,
-            item.magnet_uri,
-            item.magnetUri,
-            item.links?.magnet
-        )
-        const suppliedHash = this.firstString(
-            item.hash,
-            item.info_hash,
-            item.infoHash
-        )
-        const torrentUrl = this.firstString(
-            item.torrent,
-            item.torrent_url,
-            item.torrentUrl,
-            item.downloadUrl,
-            item.download_url
-        )
-        const genericLink = this.firstString(item.link)
-        const hash = suppliedHash || this.extractHash(magnet) || this.extractHash(genericLink)
-        const safeGenericLink = genericLink && (
-            genericLink.startsWith('magnet:') ||
-            genericLink.endsWith('.torrent') ||
-            /^[A-Fa-f0-9]{40}$/.test(genericLink)
-        ) ? genericLink : ''
-        const link = magnet || torrentUrl || safeGenericLink || hash
+        if (!match) return ''
 
-        if (!title || !link) return null
+        return this.decodeXml(match[1]
+            .replace(/^\s*<!\[CDATA\[/, '')
+            .replace(/\]\]>\s*$/, '')
+            .trim())
+    }
+
+    decodeXml(value) {
+        const entities = {
+            amp: '&',
+            apos: "'",
+            gt: '>',
+            lt: '<',
+            quot: '"'
+        }
+
+        return String(value ?? '')
+            .replace(/&#x([0-9a-f]+);/gi, (_, code) =>
+                String.fromCodePoint(Number.parseInt(code, 16))
+            )
+            .replace(/&#(\d+);/g, (_, code) =>
+                String.fromCodePoint(Number.parseInt(code, 10))
+            )
+            .replace(/&(amp|apos|gt|lt|quot);/gi, (_, entity) =>
+                entities[entity.toLowerCase()]
+            )
+    }
+
+    mapResult(item, mode) {
+        const title = item.title.trim()
+        const hash = item.hash.trim().toLowerCase()
+        const link = this.getTorrentLink(item.link, hash)
+
+        if (!title || !link || !hash) return null
 
         const result = {
             title,
             link,
             hash,
-            seeders: this.toNumber(item.seeders, item.Seeders),
-            leechers: this.toNumber(item.leechers, item.Leechers),
-            downloads: this.toNumber(
-                item.downloads,
-                item.Downloads,
-                item.downloadCount,
-                item.torrent_downloaded_count
-            ),
-            size: this.parseSize(item.size ?? item.total_size ?? item.Size),
-            date: this.parseDate(
-                item.date ??
-                item.DateUploaded ??
-                item.timestamp ??
-                item.createdAt
-            ),
-            accuracy: this.getAccuracy(title, titles)
+            seeders: this.toNumber(item.seeders),
+            leechers: this.toNumber(item.leechers),
+            downloads: this.toNumber(item.downloads),
+            size: this.parseSize(item.size),
+            date: this.parseDate(item.pubDate),
+            accuracy: 'medium'
         }
 
-        if (batch) result.type = 'batch'
+        const id = this.extractId(item.guid || item.link)
+        if (id != null) result.id = id
+        if (mode === 'batch') result.type = 'batch'
 
         return result
     }
 
-    firstString(...values) {
-        const value = values.find(candidate =>
-            typeof candidate === 'string' && candidate.trim()
-        )
-
-        return value?.trim() ?? ''
-    }
-
-    extractHash(value) {
-        if (typeof value !== 'string') return ''
-
-        const match = value.match(
-            /(?:xt=urn:btih:|^)([A-Fa-f0-9]{40}|[A-Z2-7]{32})(?:&|$)/i
-        )
-
-        return match?.[1] ?? ''
-    }
-
-    toNumber(...values) {
-        for (const value of values) {
-            if (typeof value === 'number' && Number.isFinite(value)) {
-                return value
-            }
-            if (typeof value !== 'string') continue
-
-            const parsed = Number(value.replace(/,/g, '').trim())
-            if (Number.isFinite(parsed)) return parsed
+    getTorrentLink(link, hash) {
+        const normalizedLink = String(link ?? '').trim()
+        if (normalizedLink.startsWith('magnet:')) return normalizedLink
+        if (/^https:\/\/nyaa\.si\/download\/\d+\.torrent(?:\?.*)?$/i.test(normalizedLink)) {
+            return normalizedLink
         }
 
-        return 0
+        return /^[a-f0-9]{40}$/i.test(hash) ? hash : ''
+    }
+
+    extractId(value) {
+        const match = String(value ?? '').match(/\/(?:view|download)\/(\d+)/i)
+        if (!match) return null
+
+        const id = Number(match[1])
+
+        return Number.isSafeInteger(id) ? id : null
+    }
+
+    matchesQuery(result, {titles, episode, absoluteEpisode, exclusions, resolution, mode}) {
+        const normalizedTitle = result.title.toLowerCase()
+        const normalizedExclusions = exclusions
+            .filter(exclusion => typeof exclusion === 'string' && exclusion.trim())
+            .map(exclusion => exclusion.toLowerCase())
+
+        if (normalizedExclusions.some(exclusion => normalizedTitle.includes(exclusion))) {
+            return false
+        }
+        if (!this.matchesAnyTitle(result.title, titles)) return false
+        if (!this.matchesResolution(result.title, resolution)) return false
+
+        if (mode === 'batch') {
+            return this.isBatchTitle(result.title)
+        }
+        if (mode === 'single') {
+            return !this.isBatchTitle(result.title) && this.matchesEpisode(
+                result.title,
+                episode,
+                absoluteEpisode
+            )
+        }
+
+        return !this.isBatchTitle(result.title)
+    }
+
+    matchesAnyTitle(resultTitle, titles) {
+        const resultTokens = new Set(this.tokenizeTitle(resultTitle))
+
+        return titles.some(title => {
+            const titleTokens = this.tokenizeTitle(title)
+                .filter(token => !['a', 'an', 'the', 'season', 'part', 'cour', 'movie'].includes(token))
+
+            if (!titleTokens.length) return false
+
+            const matches = titleTokens.filter(token => resultTokens.has(token)).length
+            const requiredMatches = titleTokens.length <= 3
+                ? titleTokens.length
+                : Math.ceil(titleTokens.length * 0.7)
+
+            return matches >= requiredMatches
+        })
+    }
+
+    tokenizeTitle(value) {
+        return String(value ?? '')
+            .normalize('NFKD')
+            .replace(/\p{M}/gu, '')
+            .toLowerCase()
+            .replace(/[^\p{L}\p{N}]+/gu, ' ')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean)
+    }
+
+    matchesEpisode(title, episode, absoluteEpisode) {
+        const episodeNumbers = [...new Set([episode, absoluteEpisode]
+            .filter(value => value != null && Number.isFinite(Number(value)))
+            .map(value => Number(value)))]
+
+        if (!episodeNumbers.length) return true
+
+        return episodeNumbers.some(episodeNumber => {
+            const escapedEpisode = String(episodeNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            const contextualPatterns = [
+                new RegExp(`\\bS\\d{1,2}E0*${escapedEpisode}(?:v\\d+)?\\b`, 'i'),
+                new RegExp(`\\b(?:E|EP|EPISODE)[ ._-]*0*${escapedEpisode}(?:v\\d+)?\\b`, 'i'),
+                new RegExp(`(?:^|[^A-Za-z0-9])0*${escapedEpisode}(?:v\\d+)?(?=$|[^A-Za-z0-9])`, 'i')
+            ]
+
+            return contextualPatterns.some(pattern => pattern.test(title))
+        })
+    }
+
+    matchesResolution(title, resolution) {
+        const normalizedResolution = this.normalizeResolution(resolution)
+        if (!normalizedResolution) return true
+
+        const dimensionMap = {
+            '2160': ['3840x2160', '4096x2160'],
+            '1080': ['1920x1080'],
+            '720': ['1280x720'],
+            '540': ['960x540'],
+            '480': ['640x480', '720x480', '854x480']
+        }
+        const aliasMap = {
+            '2160': ['4k', 'uhd'],
+            '1080': ['fhd']
+        }
+        const patterns = [
+            new RegExp(`(?:^|[^0-9])${normalizedResolution}p(?:$|[^0-9])`, 'i'),
+            ...(dimensionMap[normalizedResolution] ?? []).map(dimension =>
+                new RegExp(`(?:^|[^0-9])${dimension}(?:$|[^0-9])`, 'i')
+            ),
+            ...(aliasMap[normalizedResolution] ?? []).map(alias =>
+                new RegExp(`(?:^|[^A-Za-z0-9])${alias}(?:$|[^A-Za-z0-9])`, 'i')
+            )
+        ]
+
+        return patterns.some(pattern => pattern.test(title))
+    }
+
+    normalizeResolution(resolution) {
+        return String(resolution ?? '')
+            .trim()
+            .replace(/p$/i, '')
+    }
+
+    isBatchTitle(title) {
+        return /\b(?:batch|complete)\b|全集|(?:^|[^0-9])\d{1,3}\s*[-~–]\s*\d{1,3}(?:[^0-9]|$)|\bepisodes?\s*\d{1,3}\s*[-~–]\s*\d{1,3}\b/i.test(title)
+    }
+
+    deduplicateResults(results) {
+        const seen = new Set()
+
+        return results.filter(result => {
+            const key = result.hash || result.link
+            if (seen.has(key)) return false
+
+            seen.add(key)
+
+            return true
+        })
+    }
+
+    toNumber(value) {
+        const parsed = Number(String(value ?? '').replace(/,/g, '').trim())
+
+        return Number.isFinite(parsed) ? parsed : 0
     }
 
     parseSize(value) {
-        if (typeof value === 'number' && Number.isFinite(value)) {
-            return value
-        }
-        if (typeof value !== 'string') return 0
-
-        const normalized = value.replace(/,/g, '').trim()
-        const numeric = Number(normalized)
-
-        if (Number.isFinite(numeric)) return numeric
-
+        const normalized = String(value ?? '')
+            .replace(/,/g, '')
+            .trim()
         const match = normalized.match(/^([\d.]+)\s*([KMGTPE]?i?B)$/i)
         if (!match) return 0
 
@@ -282,30 +456,9 @@ export default new class Nyaa {
     }
 
     parseDate(value) {
-        if (value instanceof Date && !Number.isNaN(value.getTime())) {
-            return value
-        }
-
-        let date
-
-        if (typeof value === 'number') {
-            date = new Date(value < 1000000000000 ? value * 1000 : value)
-        } else {
-            date = new Date(value ?? 0)
-        }
+        const date = new Date(value || 0)
 
         return Number.isNaN(date.getTime()) ? new Date(0) : date
-    }
-
-    getAccuracy(resultTitle, titles) {
-        const normalizedResult = this.cleanSearchTitle(resultTitle).toLowerCase()
-        const exactTitleMatch = titles.some(title => {
-            const normalizedTitle = this.cleanSearchTitle(title).toLowerCase()
-
-            return normalizedTitle && normalizedResult.includes(normalizedTitle)
-        })
-
-        return exactTitleMatch ? 'medium' : 'low'
     }
 
     async test(options, providedFetch) {
@@ -314,22 +467,12 @@ export default new class Nyaa {
             throw new Error('Hayase did not provide a usable fetch function.')
         }
 
-        const params = new URLSearchParams({
-            q: 'one piece',
-            category: '1_0'
-        })
-        const response = await request(this.base + '?' + params.toString())
-
+        const response = await request(this.buildFeedUrl('one piece'))
         if (!response.ok) {
-            throw new Error(`The Nyaa search API returned HTTP ${response.status}.`)
+            throw new Error(`Nyaa.si returned HTTP ${response.status}.`)
         }
 
-        const payload = await response.json()
-        const items = this.findItems(payload)
-
-        if (!items) {
-            throw new Error('The Nyaa search API returned an unsupported response format.')
-        }
+        this.parseFeed(await response.text())
 
         return true
     }

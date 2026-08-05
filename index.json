@@ -4,8 +4,8 @@
     "deprecated": false,
     "id": "sussyseraph.extension.nyaa",
     "name": "Nyaa",
-    "description": "Searches Nyaa.si for anime torrents through the NyaaSi API.",
-    "version": "1.1.0",
+    "description": "Searches Nyaa.si directly through its RSS feed.",
+    "version": "1.2.0",
     "type": "torrent",
     "accuracy": "medium",
     "ratio": 0,
@@ -14,8 +14,9 @@
       "ALL"
     ],
     "icon": "https://nyaa.si/static/favicon.png",
-    "url": "aHR0cHM6Ly9ueWFhc2ktYXBpLnZlcmNlbC5hcHA=",
+    "url": "aHR0cHM6Ly9ueWFhLnNp",
     "update": "https://raw.githubusercontent.com/sussyseraph/extensions/main/index.json",
-    "code": "https://raw.githubusercontent.com/sussyseraph/extensions/main/nyaa.js"
+    "code": "https://raw.githubusercontent.com/sussyseraph/extensions/main/nyaa.js",
+    "rateLimit": 2
   }
 ]
