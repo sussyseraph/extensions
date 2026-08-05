@@ -17,17 +17,17 @@ export default new class Nyaa {
             throw new Error('Hayase did not provide its CORS-enabled fetch function.')
         }
 
-        const targetEpisodes = this.getTargetEpisodes(
+        const episodeTargets = this.getEpisodeTargets(
             episode,
             absoluteEpisodeNumber
         )
 
-        if (!targetEpisodes.length) return []
+        if (!episodeTargets.length) return []
 
         const searchTitles = this.getSearchTitles(titles)
         const queries = this.buildSingleQueries(
             searchTitles,
-            targetEpisodes,
+            episodeTargets,
             resolution
         )
         const results = await this.fetchQueries(
@@ -35,21 +35,19 @@ export default new class Nyaa {
             fetch,
             exclusions
         )
-        const exactResults = results
-            .filter(result => !this.isBatchTitle(result.title))
-            .filter(result => this.matchesRequestedEpisode(
-                result.title,
-                targetEpisodes
-            ))
+        const match = this.selectSingleEpisodeResults(
+            results,
+            episodeTargets
+        )
 
         console.debug(
-            `[Nyaa] Single episode ${targetEpisodes.join('/')}: ` +
-            `${exactResults.length} exact results from ` +
-            `${results.length} candidates`
+            `[Nyaa] Single episode targets ${this.formatEpisodeTargets(episodeTargets)}: ` +
+            `${match.results.length} results matched ${match.target?.label ?? 'nothing'} ` +
+            `from ${results.length} candidates`
         )
 
         return this.sortResults(
-            exactResults,
+            match.results,
             titles,
             resolution
         ).map(result => ({
@@ -74,7 +72,7 @@ export default new class Nyaa {
             throw new Error('Hayase did not provide its CORS-enabled fetch function.')
         }
 
-        const targetEpisodes = this.getTargetEpisodes(
+        const episodeTargets = this.getEpisodeTargets(
             episode,
             absoluteEpisodeNumber
         )
@@ -88,21 +86,20 @@ export default new class Nyaa {
             fetch,
             exclusions
         )
-        const batchResults = results
-            .filter(result => this.isBatchTitle(result.title))
-            .filter(result => this.batchContainsEpisode(
-                result.title,
-                targetEpisodes
-            ))
-            .map(result => ({
-                ...result,
-                type: 'batch',
-                accuracy: 'medium'
-            }))
+        const match = this.selectBatchResults(
+            results,
+            episodeTargets
+        )
+        const batchResults = match.results.map(result => ({
+            ...result,
+            type: 'batch',
+            accuracy: 'medium'
+        }))
 
         console.debug(
-            `[Nyaa] Batch search: ${batchResults.length} actual ` +
-            `batches from ${results.length} candidates`
+            `[Nyaa] Batch targets ${this.formatEpisodeTargets(episodeTargets)}: ` +
+            `${batchResults.length} batches matched ${match.target?.label ?? 'a complete batch'} ` +
+            `from ${results.length} candidates`
         )
 
         return this.sortResults(
@@ -152,7 +149,7 @@ export default new class Nyaa {
 
     buildSingleQueries(
         searchTitles,
-        targetEpisodes,
+        episodeTargets,
         resolution
     ) {
         const resolutionTerm = this.getResolutionSearchTerm(
@@ -160,10 +157,10 @@ export default new class Nyaa {
         )
         const queries = []
 
-        for (const title of searchTitles.slice(0, 2)) {
-            for (const targetEpisode of targetEpisodes) {
-                const episode = String(targetEpisode)
-                const paddedEpisode = Number.isInteger(targetEpisode)
+        for (const target of episodeTargets) {
+            for (const title of searchTitles.slice(0, 2)) {
+                const episode = String(target.number)
+                const paddedEpisode = Number.isInteger(target.number)
                     ? episode.padStart(2, '0')
                     : episode
 
@@ -185,7 +182,7 @@ export default new class Nyaa {
 
         return [...new Set(
             queries.filter(Boolean)
-        )].slice(0, 6)
+        )].slice(0, 8)
     }
 
     buildBatchQueries(searchTitles, resolution) {
@@ -323,30 +320,134 @@ export default new class Nyaa {
             .trim()
     }
 
-    getTargetEpisodes(
+    getEpisodeTargets(
         episode,
         absoluteEpisodeNumber
     ) {
-        return [...new Set(
-            [episode, absoluteEpisodeNumber]
-                .filter(value =>
-                    value != null &&
-                    Number.isFinite(Number(value))
-                )
-                .map(value => Number(value))
-        )]
+        const localEpisode = this.toEpisodeNumber(episode)
+        const absoluteEpisode = this.toEpisodeNumber(
+            absoluteEpisodeNumber
+        )
+        const targets = []
+
+        /*
+         * Prefer Hayase's absolute episode number whenever it differs
+         * from the season-local number. This handles split cours and
+         * season parts that Nyaa uploaders continue numbering across.
+         */
+        if (
+            absoluteEpisode != null &&
+            absoluteEpisode !== localEpisode
+        ) {
+            targets.push({
+                number: absoluteEpisode,
+                label: `absolute episode ${absoluteEpisode}`
+            })
+        }
+
+        if (localEpisode != null) {
+            targets.push({
+                number: localEpisode,
+                label: `season episode ${localEpisode}`
+            })
+        }
+
+        if (
+            absoluteEpisode != null &&
+            !targets.some(target =>
+                target.number === absoluteEpisode
+            )
+        ) {
+            targets.push({
+                number: absoluteEpisode,
+                label: `episode ${absoluteEpisode}`
+            })
+        }
+
+        return targets
     }
 
-    matchesRequestedEpisode(
-        title,
-        targetEpisodes
-    ) {
-        return targetEpisodes.some(targetEpisode =>
-            this.matchesEpisodeNumber(
-                title,
-                targetEpisode
-            )
+    toEpisodeNumber(value) {
+        if (
+            value == null ||
+            !Number.isFinite(Number(value))
+        ) {
+            return null
+        }
+
+        return Number(value)
+    }
+
+    formatEpisodeTargets(targets) {
+        return targets.length
+            ? targets.map(target => target.label).join(', then ')
+            : 'none'
+    }
+
+    selectSingleEpisodeResults(results, episodeTargets) {
+        const singleResults = results.filter(result =>
+            !this.isBatchTitle(result.title)
         )
+
+        for (const target of episodeTargets) {
+            const matches = singleResults.filter(result =>
+                this.matchesEpisodeNumber(
+                    result.title,
+                    target.number
+                )
+            )
+
+            if (matches.length) {
+                return {
+                    target,
+                    results: matches
+                }
+            }
+        }
+
+        return {
+            target: null,
+            results: []
+        }
+    }
+
+    selectBatchResults(results, episodeTargets) {
+        const batchResults = results.filter(result =>
+            this.isBatchTitle(result.title)
+        )
+
+        if (!episodeTargets.length) {
+            return {
+                target: null,
+                results: batchResults
+            }
+        }
+
+        for (const target of episodeTargets) {
+            const rangedMatches = batchResults.filter(result =>
+                this.batchRangeContainsEpisode(
+                    result.title,
+                    target.number
+                )
+            )
+
+            if (rangedMatches.length) {
+                return {
+                    target,
+                    results: rangedMatches
+                }
+            }
+        }
+
+        const completeBatches = batchResults.filter(result =>
+            !this.extractEpisodeRanges(result.title).length &&
+            /\b(?:batch|complete)\b|全集/i.test(result.title)
+        )
+
+        return {
+            target: null,
+            results: completeBatches
+        }
     }
 
     matchesEpisodeNumber(title, episode) {
@@ -486,29 +587,12 @@ export default new class Nyaa {
         return ranges
     }
 
-    batchContainsEpisode(
-        title,
-        targetEpisodes
-    ) {
-        if (!targetEpisodes.length) return true
-
-        const ranges = this.extractEpisodeRanges(title)
-
-        /*
-         * A title explicitly marked "Batch" or "Complete"
-         * may not include a numeric range.
-         */
-        if (!ranges.length) {
-            return /\b(?:batch|complete)\b|全集/i
-                .test(title)
-        }
-
-        return ranges.some(({start, end}) =>
-            targetEpisodes.some(episode =>
+    batchRangeContainsEpisode(title, episode) {
+        return this.extractEpisodeRanges(title)
+            .some(({start, end}) =>
                 episode >= Math.min(start, end) &&
                 episode <= Math.max(start, end)
             )
-        )
     }
 
     matchesExclusions(result, exclusions) {
