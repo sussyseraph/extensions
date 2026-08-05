@@ -250,13 +250,12 @@ export default new class Nyaa {
     mapResult(item, mode) {
         const title = item.title.trim()
         const hash = item.hash.trim().toLowerCase()
-        const link = this.getTorrentLink(item.link, hash)
 
-        if (!title || !link || !hash) return null
+        if (!title || !/^[a-f0-9]{40}$/i.test(hash)) return null
 
         const result = {
             title,
-            link,
+            link: hash,
             hash,
             seeders: this.toNumber(item.seeders),
             leechers: this.toNumber(item.leechers),
@@ -271,16 +270,6 @@ export default new class Nyaa {
         if (mode === 'batch') result.type = 'batch'
 
         return result
-    }
-
-    getTorrentLink(link, hash) {
-        const normalizedLink = String(link ?? '').trim()
-        if (normalizedLink.startsWith('magnet:')) return normalizedLink
-        if (/^https:\/\/nyaa\.si\/download\/\d+\.torrent(?:\?.*)?$/i.test(normalizedLink)) {
-            return normalizedLink
-        }
-
-        return /^[a-f0-9]{40}$/i.test(hash) ? hash : ''
     }
 
     extractId(value) {
