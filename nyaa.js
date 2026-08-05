@@ -207,7 +207,7 @@ export default new class Nyaa {
     inferParallelEpisodeNumber(results, localEpisode) {
         if (
             !Number.isInteger(localEpisode) ||
-            localEpisode < 2
+            localEpisode < 1
         ) {
             return null
         }
@@ -224,26 +224,41 @@ export default new class Nyaa {
                 )
         )
 
-        /*
-         * Require the local sequence to contain both the current
-         * episode and its predecessor. For example, 1 and 2.
-         */
+        if (!episodeNumbers.has(localEpisode)) {
+            return null
+        }
+        
+        const hasPreviousLocalEpisode =
+            localEpisode > 1 &&
+            episodeNumbers.has(localEpisode - 1)
+        const hasNextLocalEpisode = episodeNumbers.has(
+            localEpisode + 1
+        )
+
         if (
-            !episodeNumbers.has(localEpisode) ||
-            !episodeNumbers.has(localEpisode - 1)
+            !hasPreviousLocalEpisode &&
+            !hasNextLocalEpisode
         ) {
             return null
         }
 
-        /*
-         * Find a higher parallel sequence containing the equivalent
-         * current episode and its predecessor. For example, 41 and 42.
-         */
         const inferredCandidates = [...episodeNumbers]
-            .filter(episodeNumber =>
-                episodeNumber > localEpisode + 1 &&
-                episodeNumbers.has(episodeNumber - 1)
-            )
+            .filter(episodeNumber => {
+                if (episodeNumber <= localEpisode + 1) {
+                    return false
+                }
+
+                const matchesPreviousSequence =
+                    hasPreviousLocalEpisode &&
+                    episodeNumbers.has(episodeNumber - 1)
+
+                const matchesNextSequence =
+                    hasNextLocalEpisode &&
+                    episodeNumbers.has(episodeNumber + 1)
+
+                return matchesPreviousSequence ||
+                    matchesNextSequence
+            })
             .sort((left, right) =>
                 left - right
             )
