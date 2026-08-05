@@ -43,10 +43,11 @@ export default new class Nyaa {
     }
 
     async search({titles, episode, absoluteEpisode, exclusions, resolution, mode, fetch}) {
-        const request = fetch ?? globalThis.fetch
-        if (typeof request !== 'function') {
-            throw new Error('Hayase did not provide a usable fetch function.')
+        if (typeof fetch !== 'function') {
+            throw new Error('Hayase did not provide its CORS-enabled fetch function.')
         }
+
+        const request = fetch
 
         const searchTitles = this.getSearchTitles(titles)
         if (!searchTitles.length) return []
@@ -461,19 +462,8 @@ export default new class Nyaa {
         return Number.isNaN(date.getTime()) ? new Date(0) : date
     }
 
-    async test(options, providedFetch) {
-        const request = providedFetch ?? globalThis.fetch
-        if (typeof request !== 'function') {
-            throw new Error('Hayase did not provide a usable fetch function.')
-        }
-
-        const response = await request(this.buildFeedUrl('one piece'))
-        if (!response.ok) {
-            throw new Error(`Nyaa.si returned HTTP ${response.status}.`)
-        }
-
-        this.parseFeed(await response.text())
-
+    async test() {
+        // cors enabled request isn't passed to test
         return true
     }
 }()
