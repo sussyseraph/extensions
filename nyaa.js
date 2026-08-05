@@ -380,54 +380,73 @@ export default new class Nyaa {
         resolution,
         mode
     }) {
-        return results
-            .map(result => {
-                const titleScore = this.getTitleScore(
-                    result.title,
-                    titles
-                )
-                const episodeMatch = this.matchesEpisode(
-                    result.title,
-                    episode,
-                    absoluteEpisode
-                )
-                const resolutionMatch = this.matchesResolution(
-                    result.title,
-                    resolution
-                )
-                const batchMatch = this.isBatchTitle(result.title)
+        const scoredResults = results.map(result => {
+            const titleScore = this.getTitleScore(
+                result.title,
+                titles
+            )
+            const episodeMatchStrength = this.getEpisodeMatchStrength(
+                result.title,
+                episode,
+                absoluteEpisode
+            )
+            const resolutionMatch = this.matchesResolution(
+                result.title,
+                resolution
+            )
+            const batchMatch = this.isBatchTitle(result.title)
 
-                let score = titleScore * 20
+            let score = titleScore * 20
 
-                if (episodeMatch) {
-                    score += 100
-                }
+            score += episodeMatchStrength * 250
 
-                if (resolutionMatch) {
-                    score += 30
-                }
+            if (resolutionMatch) {
+                score += 30
+            }
 
-                if (mode === 'batch') {
-                    score += batchMatch ? 100 : -25
-                } else {
-                    score += batchMatch ? -50 : 15
-                }
+            if (mode === 'batch') {
+                score += batchMatch ? 100 : -25
+            } else {
+                score += batchMatch ? -50 : 15
+            }
 
-                score += Math.min(result.seeders, 100)
+            score += Math.min(result.seeders, 100)
 
-                return {
-                    result: {
-                        ...result,
-                        accuracy: this.getAccuracy({
-                            titleScore,
-                            episodeMatch,
-                            resolutionMatch,
-                            mode
-                        })
-                    },
-                    score
-                }
-            })
+            return {
+                result: {
+                    ...result,
+                    accuracy: this.getAccuracy({
+                        titleScore,
+                        episodeMatchStrength,
+                        resolutionMatch,
+                        mode
+                    })
+                },
+                score,
+                episodeMatchStrength,
+                batchMatch
+            }
+        })
+
+        let candidates = scoredResults
+
+        if (mode === 'single') {
+            const strongSingleEpisodeMatches = scoredResults.filter(entry =>
+                entry.episodeMatchStrength >= 2 &&
+                !entry.batchMatch
+            )
+            const strongEpisodeMatches = scoredResults.filter(entry =>
+                entry.episodeMatchStrength >= 2
+            )
+
+            if (strongSingleEpisodeMatches.length) {
+                candidates = strongSingleEpisodeMatches
+            } else if (strongEpisodeMatches.length) {
+                candidates = strongEpisodeMatches
+            }
+        }
+
+        return candidates
             .sort((left, right) =>
                 right.score - left.score ||
                 right.result.seeders - left.result.seeders ||
@@ -479,8 +498,48 @@ export default new class Nyaa {
             .filter(Boolean)
     }
 
-    matchesEpisode(title, episode, absoluteEpisode) {
-        const episodeNumbers = [...new Set(
+    getEpisodeMatchStrength(title, episode, absoluteEpisode) {
+        const targetEpisodes = this.getTargetEpisodes(
+            episode,
+            absoluteEpisode
+        )
+
+        if (!targetEpisodes.length) {
+            return 1
+        }
+
+        const explicitEpisodes = this.extractEpisodeNumbers(title, [
+            /\bS\d{1,3}E(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi,
+            /\b(?:EPISODE|EP|E)[ ._-]*0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi,
+            /(?:^|[^A-Za-z0-9])#0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi
+        ])
+
+        if (this.hasTargetEpisode(explicitEpisodes, targetEpisodes)) {
+            return 3
+        }
+
+        const hyphenEpisodes = this.extractEpisodeNumbers(title, [
+            /(?:^|\s)[-–—]\s*0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?(?=$|[\s._\[\](){}])/gi
+        ])
+
+        if (this.hasTargetEpisode(hyphenEpisodes, targetEpisodes)) {
+            return 2
+        }
+
+        const normalizedTitle = this.removeEpisodeNoise(title)
+        const looseEpisodes = this.extractEpisodeNumbers(normalizedTitle, [
+            /(?:^|[^A-Za-z0-9])0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?(?=$|[^A-Za-z0-9])/gi
+        ])
+
+        if (this.hasTargetEpisode(looseEpisodes, targetEpisodes)) {
+            return 1
+        }
+
+        return 0
+    }
+
+    getTargetEpisodes(episode, absoluteEpisode) {
+        return [...new Set(
             [episode, absoluteEpisode]
                 .filter(value =>
                     value != null &&
@@ -488,42 +547,42 @@ export default new class Nyaa {
                 )
                 .map(value => Number(value))
         )]
+    }
 
-        if (!episodeNumbers.length) {
-            return true
+    extractEpisodeNumbers(title, patterns) {
+        const episodeNumbers = []
+
+        for (const pattern of patterns) {
+            for (const match of String(title ?? '').matchAll(pattern)) {
+                const episodeNumber = Number(match[1])
+
+                if (Number.isFinite(episodeNumber)) {
+                    episodeNumbers.push(episodeNumber)
+                }
+            }
         }
 
-        return episodeNumbers.some(episodeNumber => {
-            const escapedEpisode = String(
-                episodeNumber
-            ).replace(
-                /[.*+?^${}()|[\]\\]/g,
-                '\\$&'
-            )
+        return episodeNumbers
+    }
 
-            const patterns = [
-                new RegExp(
-                    `\\bS\\d{1,2}E0*${escapedEpisode}` +
-                    `(?:v\\d+)?\\b`,
-                    'i'
-                ),
-                new RegExp(
-                    `\\b(?:E|EP|EPISODE)[ ._-]*` +
-                    `0*${escapedEpisode}(?:v\\d+)?\\b`,
-                    'i'
-                ),
-                new RegExp(
-                    `(?:^|[^A-Za-z0-9])` +
-                    `0*${escapedEpisode}(?:v\\d+)?` +
-                    `(?=$|[^A-Za-z0-9])`,
-                    'i'
-                )
-            ]
-
-            return patterns.some(pattern =>
-                pattern.test(title)
+    hasTargetEpisode(foundEpisodes, targetEpisodes) {
+        return foundEpisodes.some(foundEpisode =>
+            targetEpisodes.some(targetEpisode =>
+                Math.abs(foundEpisode - targetEpisode) < 0.0001
             )
-        })
+        )
+    }
+
+    removeEpisodeNoise(title) {
+        return String(title ?? '')
+            .replace(/\bS(?:EASON)?[ ._-]*\d{1,3}\b/gi, ' ')
+            .replace(/\b(?:19|20)\d{2}\b/g, ' ')
+            .replace(/\b(?:480|540|720|1080|1440|2160|4320)p\b/gi, ' ')
+            .replace(/\b\d{3,4}x\d{3,4}\b/gi, ' ')
+            .replace(/\b\d{1,2}[ ._-]*bit\b/gi, ' ')
+            .replace(/\b\d(?:\.\d)?[ ._-]*(?:ch|channels?)\b/gi, ' ')
+            .replace(/\b[257]\.1\b/g, ' ')
+            .replace(/\[[A-Fa-f0-9]{8,40}\]/g, ' ')
     }
 
     matchesResolution(title, resolution) {
@@ -602,21 +661,21 @@ export default new class Nyaa {
 
     getAccuracy({
                     titleScore,
-                    episodeMatch,
+                    episodeMatchStrength,
                     resolutionMatch,
                     mode
                 }) {
         if (
             titleScore >= 0.8 &&
             resolutionMatch &&
-            (mode !== 'single' || episodeMatch)
+            (mode !== 'single' || episodeMatchStrength >= 2)
         ) {
             return 'high'
         }
 
         if (
             titleScore >= 0.5 ||
-            episodeMatch ||
+            episodeMatchStrength >= 1 ||
             resolutionMatch
         ) {
             return 'medium'
