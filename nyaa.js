@@ -29,80 +29,129 @@ export default new class Nyaa {
             titles,
             searchTitles
         )
+        const absoluteTarget = episodeTargets.find(target =>
+            target.kind === 'absolute'
+        )
+        const localTarget = episodeTargets.find(target =>
+            target.kind === 'local'
+        )
 
-        for (const target of episodeTargets) {
-            const directQueries = this.buildSingleQueries(
+        if (absoluteTarget) {
+            const directAbsoluteResults = await this.fetchSingleTargetResults({
                 searchTitles,
-                [target],
-                resolution
-            )
-            const directResults = await this.fetchQueries(
-                directQueries,
+                target: absoluteTarget,
+                resolution,
                 fetch,
                 exclusions
-            )
-            const directMatch = this.selectSingleEpisodeResults(
-                directResults,
-                [target]
-            )
+            })
 
-            if (directMatch.results.length) {
-                console.debug(
-                    `[Nyaa] ${target.label}: ${directMatch.results.length} ` +
-                    `direct results from ${directResults.length} candidates`
-                )
-
-                return this.sortResults(
-                    directMatch.results,
+            if (directAbsoluteResults.length) {
+                return this.prepareSingleResults(
+                    directAbsoluteResults,
                     titles,
-                    resolution
-                ).map(result => ({
-                    ...result,
-                    accuracy: 'high'
-                }))
+                    resolution,
+                    'high'
+                )
             }
 
-            if (
-                target.kind === 'absolute' &&
-                broadSearchTitles.length
-            ) {
-                const broadQueries = this.buildSingleQueries(
-                    broadSearchTitles,
-                    [target],
-                    resolution
-                )
-                const broadResults = await this.fetchQueries(
-                    broadQueries,
+            if (broadSearchTitles.length) {
+                const broadAbsoluteResults = await this.fetchSingleTargetResults({
+                    searchTitles: broadSearchTitles,
+                    target: absoluteTarget,
+                    resolution,
+                    fetch,
+                    exclusions
+                })
+
+                if (broadAbsoluteResults.length) {
+                    return this.prepareSingleResults(
+                        broadAbsoluteResults,
+                        [...titles, ...broadSearchTitles],
+                        resolution,
+                        'medium'
+                    )
+                }
+            }
+
+            if (localTarget) {
+                const titleOnlyResults = await this.fetchQueries(
+                    this.buildTitleOnlyQueries(searchTitles),
                     fetch,
                     exclusions
                 )
-                const broadMatch = this.selectSingleEpisodeResults(
-                    broadResults,
-                    [target]
+                const inferredEpisode = this.inferParallelEpisodeNumber(
+                    titleOnlyResults,
+                    localTarget.number
                 )
 
-                if (broadMatch.results.length) {
+                if (inferredEpisode != null) {
+                    const inferredTarget = {
+                        number: inferredEpisode,
+                        label: `inferred episode ${inferredEpisode}`,
+                        kind: 'inferred'
+                    }
+                    const inferredDirectResults = await this.fetchSingleTargetResults({
+                        searchTitles,
+                        target: inferredTarget,
+                        resolution,
+                        fetch,
+                        exclusions
+                    })
+                    const inferredTitleOnlyResults = titleOnlyResults
+                        .filter(result => !this.isBatchTitle(result.title))
+                        .filter(result => this.matchesEpisodeNumber(
+                            result.title,
+                            inferredEpisode
+                        ))
+                    const localResults = await this.fetchSingleTargetResults({
+                        searchTitles,
+                        target: localTarget,
+                        resolution,
+                        fetch,
+                        exclusions
+                    })
+                    const combinedResults = this.deduplicateResults([
+                        ...inferredTitleOnlyResults,
+                        ...inferredDirectResults,
+                        ...localResults
+                    ])
+
                     console.debug(
-                        `[Nyaa] ${target.label}: ${broadMatch.results.length} ` +
-                        `parent-title results from ${broadResults.length} candidates`
+                        `[Nyaa] Inferred parallel episode ${inferredEpisode} ` +
+                        `from season episode ${localTarget.number}: ` +
+                        `${combinedResults.length} combined results`
                     )
 
-                    return this.sortResults(
-                        broadMatch.results,
-                        [...titles, ...broadSearchTitles],
-                        resolution
-                    ).map(result => ({
-                        ...result,
-                        accuracy: 'medium'
-                    }))
+                    if (combinedResults.length) {
+                        return this.prepareSingleResults(
+                            combinedResults,
+                            titles,
+                            resolution,
+                            'medium'
+                        )
+                    }
                 }
             }
         }
 
-        console.debug(
-            `[Nyaa] Single episode targets ${this.formatEpisodeTargets(episodeTargets)}: ` +
-            'no exact results found'
-        )
+        if (localTarget) {
+            const localResults = await this.fetchSingleTargetResults({
+                searchTitles,
+                target: localTarget,
+                resolution,
+                fetch,
+                exclusions
+            })
+
+            if (localResults.length) {
+                return this.prepareSingleResults(
+                    localResults,
+                    titles,
+                    resolution,
+                    'high'
+                )
+            }
+        }
 
         return []
     }
