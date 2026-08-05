@@ -149,29 +149,36 @@ export default new class Nyaa {
 
         for (const title of searchTitles.slice(0, 2)) {
             if (mode === 'single') {
-                if (episode != null) {
+                const targetEpisodes = this.getTargetEpisodes(
+                    episode,
+                    absoluteEpisode
+                )
+
+                if (targetEpisodes.length) {
+                    for (const targetEpisode of targetEpisodes) {
+                        const rawEpisode = String(targetEpisode)
+                        const paddedEpisode = rawEpisode.padStart(2, '0')
+
+                        queries.push(this.joinSearchTerms(
+                            title,
+                            paddedEpisode,
+                            resolutionSearchTerm
+                        ))
+
+                        if (rawEpisode !== paddedEpisode) {
+                            queries.push(this.joinSearchTerms(
+                                title,
+                                rawEpisode,
+                                resolutionSearchTerm
+                            ))
+                        }
+                    }
+                } else {
                     queries.push(this.joinSearchTerms(
                         title,
-                        String(episode).padStart(2, '0'),
                         resolutionSearchTerm
                     ))
                 }
-
-                if (
-                    absoluteEpisode != null &&
-                    Number(absoluteEpisode) !== Number(episode)
-                ) {
-                    queries.push(this.joinSearchTerms(
-                        title,
-                        String(absoluteEpisode).padStart(2, '0'),
-                        resolutionSearchTerm
-                    ))
-                }
-
-                queries.push(this.joinSearchTerms(
-                    title,
-                    resolutionSearchTerm
-                ))
             } else if (mode === 'batch') {
                 queries.push(this.joinSearchTerms(
                     title,
@@ -201,7 +208,7 @@ export default new class Nyaa {
             }
         }
 
-        return [...new Set(queries.filter(Boolean))].slice(0, 5)
+        return [...new Set(queries.filter(Boolean))].slice(0, 6)
     }
 
     joinSearchTerms(...terms) {
@@ -380,6 +387,10 @@ export default new class Nyaa {
         resolution,
         mode
     }) {
+        const targetEpisodes = this.getTargetEpisodes(
+            episode,
+            absoluteEpisode
+        )
         const scoredResults = results.map(result => {
             const titleScore = this.getTitleScore(
                 result.title,
@@ -388,29 +399,14 @@ export default new class Nyaa {
             const episodeMatchStrength = this.getEpisodeMatchStrength(
                 result.title,
                 episode,
-                absoluteEpisode
+                absoluteEpisode,
+                titles
             )
             const resolutionMatch = this.matchesResolution(
                 result.title,
                 resolution
             )
             const batchMatch = this.isBatchTitle(result.title)
-
-            let score = titleScore * 20
-
-            score += episodeMatchStrength * 250
-
-            if (resolutionMatch) {
-                score += 30
-            }
-
-            if (mode === 'batch') {
-                score += batchMatch ? 100 : -25
-            } else {
-                score += batchMatch ? -50 : 15
-            }
-
-            score += Math.min(result.seeders, 100)
 
             return {
                 result: {
@@ -422,36 +418,40 @@ export default new class Nyaa {
                         mode
                     })
                 },
-                score,
+                titleScore,
                 episodeMatchStrength,
+                resolutionMatch,
                 batchMatch
             }
         })
 
         let candidates = scoredResults
 
-        if (mode === 'single') {
-            const strongSingleEpisodeMatches = scoredResults.filter(entry =>
-                entry.episodeMatchStrength >= 2 &&
+        if (mode === 'single' && targetEpisodes.length) {
+            candidates = scoredResults.filter(entry =>
+                entry.episodeMatchStrength > 0 &&
                 !entry.batchMatch
             )
-            const strongEpisodeMatches = scoredResults.filter(entry =>
-                entry.episodeMatchStrength >= 2
+
+            console.debug(
+                `[Nyaa] Requested episode(s) ${targetEpisodes.join(', ')}: ` +
+                `${candidates.length} exact episode candidates`
             )
 
-            if (strongSingleEpisodeMatches.length) {
-                candidates = strongSingleEpisodeMatches
-            } else if (strongEpisodeMatches.length) {
-                candidates = strongEpisodeMatches
+            if (!candidates.length) {
+                return []
             }
         }
 
         return candidates
             .sort((left, right) =>
-                right.score - left.score ||
+                right.episodeMatchStrength - left.episodeMatchStrength ||
+                right.titleScore - left.titleScore ||
+                Number(right.resolutionMatch) - Number(left.resolutionMatch) ||
+                Number(!right.batchMatch) - Number(!left.batchMatch) ||
                 right.result.seeders - left.result.seeders ||
-                right.result.date.getTime() -
-                left.result.date.getTime()
+                right.result.downloads - left.result.downloads ||
+                right.result.date.getTime() - left.result.date.getTime()
             )
             .map(entry => entry.result)
     }
@@ -498,7 +498,12 @@ export default new class Nyaa {
             .filter(Boolean)
     }
 
-    getEpisodeMatchStrength(title, episode, absoluteEpisode) {
+    getEpisodeMatchStrength(
+        title,
+        episode,
+        absoluteEpisode,
+        titles
+    ) {
         const targetEpisodes = this.getTargetEpisodes(
             episode,
             absoluteEpisode
@@ -509,30 +514,37 @@ export default new class Nyaa {
         }
 
         const explicitEpisodes = this.extractEpisodeNumbers(title, [
-            /\bS\d{1,3}E(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi,
+            /\bS\d{1,3}E0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi,
             /\b(?:EPISODE|EP|E)[ ._-]*0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi,
             /(?:^|[^A-Za-z0-9])#0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi
         ])
 
         if (this.hasTargetEpisode(explicitEpisodes, targetEpisodes)) {
+            return 4
+        }
+
+        const delimiterEpisodes = this.extractEpisodeNumbers(title, [
+            /(?:^|[\s._\[\](){}])[-–—][\s._-]*0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?(?=$|[\s._\[\](){}])/gi,
+            /(?:^|[\s._\[\](){}])0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?[\s._-]*[-–—](?=$|[\s._\[\](){}])/gi
+        ])
+
+        if (this.hasTargetEpisode(delimiterEpisodes, targetEpisodes)) {
             return 3
         }
 
-        const hyphenEpisodes = this.extractEpisodeNumbers(title, [
-            /(?:^|\s)[-–—]\s*0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?(?=$|[\s._\[\](){}])/gi
-        ])
+        const normalizedTitle = this.removeEpisodeNoise(
+            title,
+            titles
+        )
+        const standaloneEpisodes = this.extractEpisodeNumbers(
+            normalizedTitle,
+            [
+                /(?:^|[^A-Za-z0-9])0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?(?=$|[^A-Za-z0-9])/gi
+            ]
+        )
 
-        if (this.hasTargetEpisode(hyphenEpisodes, targetEpisodes)) {
+        if (this.hasTargetEpisode(standaloneEpisodes, targetEpisodes)) {
             return 2
-        }
-
-        const normalizedTitle = this.removeEpisodeNoise(title)
-        const looseEpisodes = this.extractEpisodeNumbers(normalizedTitle, [
-            /(?:^|[^A-Za-z0-9])0*(\d{1,4}(?:\.\d+)?)(?:v\d+)?(?=$|[^A-Za-z0-9])/gi
-        ])
-
-        if (this.hasTargetEpisode(looseEpisodes, targetEpisodes)) {
-            return 1
         }
 
         return 0
@@ -573,8 +585,30 @@ export default new class Nyaa {
         )
     }
 
-    removeEpisodeNoise(title) {
-        return String(title ?? '')
+    removeEpisodeNoise(title, titles) {
+        let normalizedTitle = String(title ?? '')
+
+        for (const knownTitle of titles) {
+            const titleTokens = this.cleanSearchTitle(knownTitle)
+                .split(/\s+/)
+                .filter(Boolean)
+
+            if (!titleTokens.length) continue
+
+            const pattern = titleTokens
+                .map(token => token.replace(
+                    /[.*+?^${}()|[\]\\]/g,
+                    '\\$&'
+                ))
+                .join('[^\\p{L}\\p{N}]+')
+
+            normalizedTitle = normalizedTitle.replace(
+                new RegExp(pattern, 'giu'),
+                ' '
+            )
+        }
+
+        return normalizedTitle
             .replace(/\bS(?:EASON)?[ ._-]*\d{1,3}\b/gi, ' ')
             .replace(/\b(?:19|20)\d{2}\b/g, ' ')
             .replace(/\b(?:480|540|720|1080|1440|2160|4320)p\b/gi, ' ')
@@ -583,6 +617,7 @@ export default new class Nyaa {
             .replace(/\b\d(?:\.\d)?[ ._-]*(?:ch|channels?)\b/gi, ' ')
             .replace(/\b[257]\.1\b/g, ' ')
             .replace(/\[[A-Fa-f0-9]{8,40}\]/g, ' ')
+            .replace(/(?:^|[^0-9])\d{1,4}\s*[-~–]\s*\d{1,4}(?=$|[^0-9])/g, ' ')
     }
 
     matchesResolution(title, resolution) {
