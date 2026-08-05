@@ -5,7 +5,7 @@
     "id": "sussyseraph.extension.nyaa",
     "name": "Nyaa",
     "description": "Searches Nyaa.si directly through its RSS feed.",
-    "version": "1.2.7",
+    "version": "1.2.8",
     "type": "torrent",
     "accuracy": "medium",
     "ratio": 0,

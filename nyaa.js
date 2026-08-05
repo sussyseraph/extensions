@@ -25,35 +25,86 @@ export default new class Nyaa {
         if (!episodeTargets.length) return []
 
         const searchTitles = this.getSearchTitles(titles)
-        const queries = this.buildSingleQueries(
-            searchTitles,
-            episodeTargets,
-            resolution
+        const broadSearchTitles = this.getBroadSearchTitles(
+            titles,
+            searchTitles
         )
-        const results = await this.fetchQueries(
-            queries,
-            fetch,
-            exclusions
-        )
-        const match = this.selectSingleEpisodeResults(
-            results,
-            episodeTargets
-        )
+
+        for (const target of episodeTargets) {
+            const directQueries = this.buildSingleQueries(
+                searchTitles,
+                [target],
+                resolution
+            )
+            const directResults = await this.fetchQueries(
+                directQueries,
+                fetch,
+                exclusions
+            )
+            const directMatch = this.selectSingleEpisodeResults(
+                directResults,
+                [target]
+            )
+
+            if (directMatch.results.length) {
+                console.debug(
+                    `[Nyaa] ${target.label}: ${directMatch.results.length} ` +
+                    `direct results from ${directResults.length} candidates`
+                )
+
+                return this.sortResults(
+                    directMatch.results,
+                    titles,
+                    resolution
+                ).map(result => ({
+                    ...result,
+                    accuracy: 'high'
+                }))
+            }
+
+            if (
+                target.kind === 'absolute' &&
+                broadSearchTitles.length
+            ) {
+                const broadQueries = this.buildSingleQueries(
+                    broadSearchTitles,
+                    [target],
+                    resolution
+                )
+                const broadResults = await this.fetchQueries(
+                    broadQueries,
+                    fetch,
+                    exclusions
+                )
+                const broadMatch = this.selectSingleEpisodeResults(
+                    broadResults,
+                    [target]
+                )
+
+                if (broadMatch.results.length) {
+                    console.debug(
+                        `[Nyaa] ${target.label}: ${broadMatch.results.length} ` +
+                        `parent-title results from ${broadResults.length} candidates`
+                    )
+
+                    return this.sortResults(
+                        broadMatch.results,
+                        [...titles, ...broadSearchTitles],
+                        resolution
+                    ).map(result => ({
+                        ...result,
+                        accuracy: 'medium'
+                    }))
+                }
+            }
+        }
 
         console.debug(
             `[Nyaa] Single episode targets ${this.formatEpisodeTargets(episodeTargets)}: ` +
-            `${match.results.length} results matched ${match.target?.label ?? 'nothing'} ` +
-            `from ${results.length} candidates`
+            'no exact results found'
         )
 
-        return this.sortResults(
-            match.results,
-            titles,
-            resolution
-        ).map(result => ({
-            ...result,
-            accuracy: 'high'
-        }))
+        return []
     }
 
     async batch(query) {
@@ -313,6 +364,82 @@ export default new class Nyaa {
             : usableTitles
     }
 
+    getBroadSearchTitles(titles, exactTitles) {
+        const exactTitleSet = new Set(
+            exactTitles.map(title => title.toLowerCase())
+        )
+        const variants = []
+
+        const addVariant = value => {
+            const cleaned = this.cleanSearchTitle(value)
+            const tokens = this.tokenizeTitle(cleaned)
+
+            if (
+                !cleaned ||
+                exactTitleSet.has(cleaned.toLowerCase()) ||
+                cleaned.length < 5 ||
+                (tokens.length === 1 && tokens[0].length < 5)
+            ) {
+                return
+            }
+
+            if (!variants.some(existing =>
+                existing.toLowerCase() === cleaned.toLowerCase()
+            )) {
+                variants.push(cleaned)
+            }
+        }
+
+        for (const title of titles) {
+            if (typeof title !== 'string' || !title.trim()) {
+                continue
+            }
+
+            const normalized = title
+                .replace(/\s+/g, ' ')
+                .trim()
+            const segments = normalized
+                .split(/\s+(?:-|–|—)\s+|:\s*/)
+                .map(segment => segment.trim())
+                .filter(Boolean)
+
+            for (
+                let length = segments.length - 1;
+                length >= 1;
+                length--
+            ) {
+                addVariant(
+                    segments.slice(0, length).join(' ')
+                )
+            }
+
+            addVariant(normalized.replace(
+                /\s*[\[(](?:part|cour|season)\s*[^\])]*[\])]\s*$/i,
+                ''
+            ))
+
+            addVariant(normalized.replace(
+                /\s+(?:part|cour|season)\s*\d+.*$/i,
+                ''
+            ))
+        }
+
+        const latinVariants = variants.filter(title =>
+            /[A-Za-z]/.test(title)
+        )
+        const pool = latinVariants.length
+            ? latinVariants
+            : variants
+
+        return pool
+            .sort((left, right) =>
+                this.tokenizeTitle(right).length -
+                this.tokenizeTitle(left).length ||
+                right.length - left.length
+            )
+            .slice(0, 2)
+    }
+
     cleanSearchTitle(title) {
         return String(title ?? '')
             .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
@@ -341,14 +468,16 @@ export default new class Nyaa {
         ) {
             targets.push({
                 number: absoluteEpisode,
-                label: `absolute episode ${absoluteEpisode}`
+                label: `absolute episode ${absoluteEpisode}`,
+                kind: 'absolute'
             })
         }
 
         if (localEpisode != null) {
             targets.push({
                 number: localEpisode,
-                label: `season episode ${localEpisode}`
+                label: `season episode ${localEpisode}`,
+                kind: 'local'
             })
         }
 
@@ -360,7 +489,8 @@ export default new class Nyaa {
         ) {
             targets.push({
                 number: absoluteEpisode,
-                label: `episode ${absoluteEpisode}`
+                label: `episode ${absoluteEpisode}`,
+                kind: 'absolute'
             })
         }
 
